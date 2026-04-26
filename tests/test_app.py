@@ -3,8 +3,9 @@ Unit tests for the MeridianPay wallet-transactions API.
 Run with: pytest tests/ -v --cov=app --cov-report=term-missing
 """
 
-import pytest
 from app import TRANSACTIONS, WALLETS, app
+
+import pytest
 
 
 @pytest.fixture(autouse=True)
@@ -26,8 +27,6 @@ def client():
         yield c
 
 
-# ── Health Check ──────────────────────────────────────────────────────────────
-
 def test_health_returns_200(client):
     resp = client.get("/health")
     assert resp.status_code == 200
@@ -35,8 +34,6 @@ def test_health_returns_200(client):
     assert data["status"] == "ok"
     assert "timestamp" in data
 
-
-# ── Get Wallet ────────────────────────────────────────────────────────────────
 
 def test_get_wallet_found(client):
     resp = client.get("/wallets/wallet-001")
@@ -53,8 +50,6 @@ def test_get_wallet_not_found(client):
     assert "error" in resp.get_json()
 
 
-# ── List Transactions ─────────────────────────────────────────────────────────
-
 def test_list_transactions_empty(client):
     resp = client.get("/wallets/wallet-001/transactions")
     assert resp.status_code == 200
@@ -66,8 +61,6 @@ def test_list_transactions_invalid_wallet(client):
     resp = client.get("/wallets/wallet-999/transactions")
     assert resp.status_code == 404
 
-
-# ── Create Transaction ────────────────────────────────────────────────────────
 
 def test_credit_transaction_success(client):
     resp = client.post(
@@ -135,8 +128,6 @@ def test_transaction_wallet_not_found(client):
     assert resp.status_code == 404
 
 
-# ── Wallet Summary ────────────────────────────────────────────────────────────
-
 def test_wallet_summary_empty(client):
     resp = client.get("/wallets/wallet-001/summary")
     assert resp.status_code == 200
@@ -151,7 +142,6 @@ def test_wallet_summary_after_transactions(client):
                 json={"type": "credit", "amount": 300.0}, content_type="application/json")
     client.post("/wallets/wallet-001/transactions",
                 json={"type": "debit", "amount": 100.0}, content_type="application/json")
-
     resp = client.get("/wallets/wallet-001/summary")
     assert resp.status_code == 200
     data = resp.get_json()
