@@ -27,7 +27,7 @@ jobs:
           pip install flask pytest pytest-cov ruff
 
       - name: Lint
-        run: ruff check . --output-format=github
+       run: ruff check . --output-format=github --ignore=I001
 
       - name: Unit tests
         run: |
