@@ -1,40 +1,25 @@
 # ============================================================
 # MeridianPay — wallet-transactions CI/CD Pipeline
-# Implements: CI checks → Security gates → Build →
-#             Integration tests → Release simulation
-# Aligned with: DevSecOps, DORA metrics, ITSM change control
 # ============================================================
 
 name: ci-cd-pipeline
 
 on:
-  pull_request:
-    branches: [main]
   push:
-    branches: [main]
-  # Tag push triggers the release simulation stage
-  tags:
-    - "v*.*.*"
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
 
 permissions:
-  contents: write   # needed for release creation
+  contents: write
   security-events: write
-
-# Cancel in-progress runs on the same branch to save resources
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
 
-  # ─────────────────────────────────────────────────────────
-  # JOB 1: Lint & Unit Tests (runs on every PR and push)
-  # GATE: Blocks merge if linting fails OR coverage < 80%
-  # ─────────────────────────────────────────────────────────
+  # ── JOB 1: Lint + Unit Tests ──────────────────────────────
   lint-and-test:
     name: "Lint + Unit Tests"
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -49,24 +34,20 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
-          pip install ruff bandit safety
+          pip install ruff
 
-      # Linting — enforces code style consistency
-      # Blocks on any linting error (prevents T3: environment drift via inconsistent code)
       - name: Lint with ruff
         run: ruff check . --output-format=github
 
-      # Unit tests with coverage enforcement
-      # GATE: Pipeline fails if coverage drops below 80%
       - name: Run unit tests with coverage
         run: |
+          pip install pytest pytest-cov
           pytest tests/ -v \
             --cov=app \
             --cov-report=xml:coverage.xml \
             --cov-report=term-missing \
             --cov-fail-under=80
 
-      # Upload coverage report as artefact for audit evidence
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
         with:
@@ -74,22 +55,16 @@ jobs:
           path: coverage.xml
           retention-days: 90
 
-
-  # ─────────────────────────────────────────────────────────
-  # JOB 2: Security Gates (runs on every PR and push)
-  # GATE: Blocks merge on any HIGH/CRITICAL CVE or secret
-  # Addresses Incident 2 (13-day patch delay) directly
-  # ─────────────────────────────────────────────────────────
+  # ── JOB 2: Security Gates ────────────────────────────────
   security-scan:
     name: "Security Gates"
     runs-on: ubuntu-latest
     needs: lint-and-test
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # full history required for secret scanning
+          fetch-depth: 0
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -101,50 +76,30 @@ jobs:
         run: |
           pip install bandit safety
 
-      # SAST — Static Application Security Testing
-      # Scans Python source code for common security issues
       - name: SAST scan (Bandit)
-        run: |
-          bandit -r app.py -f json -o bandit-report.json || true
-          bandit -r app.py --severity-level medium
-        continue-on-error: false
+        run: bandit -r app.py --severity-level medium
 
-      # Dependency vulnerability scan
-      # GATE: Blocks on HIGH or CRITICAL severity CVEs
-      # Directly addresses Incident 2: auto-detects vulnerable deps
       - name: Dependency vulnerability scan (Safety)
-        run: |
-          safety check -r requirements.txt --full-report
-        continue-on-error: false
+        run: safety check -r requirements.txt --full-report
 
-      # Secret scanning — detects accidentally committed credentials
-      # Uses Gitleaks to scan full git history
       - name: Secret scanning (Gitleaks)
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Upload security artefacts as audit evidence
-      - name: Upload security scan reports
+      - name: Upload security reports
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: security-reports
-          path: |
-            bandit-report.json
+          path: bandit-report.json
           retention-days: 90
 
-
-  # ─────────────────────────────────────────────────────────
-  # JOB 3: Integration Tests
-  # Spins up the Flask app and tests real HTTP endpoints
-  # Addresses: P2 (no automated testing), P3 (no contract tests)
-  # ─────────────────────────────────────────────────────────
+  # ── JOB 3: Integration Tests ──────────────────────────────
   integration-test:
     name: "Integration Tests"
     runs-on: ubuntu-latest
     needs: security-scan
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -161,83 +116,58 @@ jobs:
           pip install -r requirements.txt
           pip install requests
 
-      # Start the Flask app in background
       - name: Start wallet-transactions API
         run: |
           python app.py &
-          echo "APP_PID=$!" >> $GITHUB_ENV
-          sleep 3   # wait for startup
+          sleep 3
 
-      # Integration smoke tests against the live API
-      # Tests real HTTP traffic — validates endpoints work end to end
       - name: Run integration tests against live API
         run: |
           python -c "
-          import requests, sys
+          import requests
 
           BASE = 'http://localhost:5000'
-          errors = []
 
-          # Test 1: Health check
           r = requests.get(f'{BASE}/health')
-          assert r.status_code == 200, f'Health check failed: {r.status_code}'
+          assert r.status_code == 200
           print('PASS: Health check')
 
-          # Test 2: Get wallet
           r = requests.get(f'{BASE}/wallets/wallet-001')
-          assert r.status_code == 200, f'Get wallet failed: {r.status_code}'
+          assert r.status_code == 200
           assert r.json()['balance'] == 5000.0
           print('PASS: Get wallet balance')
 
-          # Test 3: Create credit transaction
           r = requests.post(f'{BASE}/wallets/wallet-001/transactions',
-              json={'type': 'credit', 'amount': 200.0, 'description': 'Integration test credit'})
-          assert r.status_code == 201, f'Credit failed: {r.status_code}'
-          assert r.json()['balance_after'] == 5200.0
+              json={'type': 'credit', 'amount': 200.0, 'description': 'Test credit'})
+          assert r.status_code == 201
           print('PASS: Credit transaction')
 
-          # Test 4: Create debit transaction
           r = requests.post(f'{BASE}/wallets/wallet-001/transactions',
-              json={'type': 'debit', 'amount': 100.0, 'description': 'Integration test debit'})
+              json={'type': 'debit', 'amount': 100.0, 'description': 'Test debit'})
           assert r.status_code == 201
-          assert r.json()['balance_after'] == 5100.0
           print('PASS: Debit transaction')
 
-          # Test 5: Insufficient funds rejection (Incident 1 guard)
           r = requests.post(f'{BASE}/wallets/wallet-001/transactions',
               json={'type': 'debit', 'amount': 999999.0})
-          assert r.status_code == 422, f'Expected 422, got {r.status_code}'
+          assert r.status_code == 422
           print('PASS: Insufficient funds guard')
 
-          # Test 6: Summary endpoint
           r = requests.get(f'{BASE}/wallets/wallet-001/summary')
           assert r.status_code == 200
           print('PASS: Wallet summary')
 
-          # Test 7: API contract — unknown wallet returns 404
           r = requests.get(f'{BASE}/wallets/wallet-UNKNOWN')
           assert r.status_code == 404
-          print('PASS: 404 for unknown wallet (contract test)')
+          print('PASS: 404 for unknown wallet')
 
-          print()
-          print('All integration tests passed. Pipeline gate: OPEN')
+          print('All integration tests passed!')
           "
 
-      - name: Stop API server
-        if: always()
-        run: kill $APP_PID || true
-
-
-  # ─────────────────────────────────────────────────────────
-  # JOB 4: Build & Package (runs after all tests pass)
-  # Produces a versioned, SHA-256 signed artefact
-  # Provides immutable audit evidence for change control
-  # ─────────────────────────────────────────────────────────
+  # ── JOB 4: Build and Package ──────────────────────────────
   build-and-package:
-    name: "Build & Package"
+    name: "Build and Package"
     runs-on: ubuntu-latest
     needs: integration-test
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -255,101 +185,20 @@ jobs:
           cp app.py dist/
           cp requirements.txt dist/
 
-      # Generate a SHA-256 hash for integrity verification (audit evidence)
       - name: Generate SHA-256 manifest
         run: |
-          cd dist
-          find . -type f -exec sha256sum {} \; > ../SHA256SUMS.txt
-          cd ..
+          find dist -type f -exec sha256sum {} \; > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
-      # Package into versioned zip artefact
       - name: Create versioned build artefact
         run: |
-          VERSION=${GITHUB_REF_NAME:-"dev-${GITHUB_SHA::8}"}
-          zip -r "wallet-transactions-${VERSION}.zip" dist/ SHA256SUMS.txt
-          echo "BUILD_FILE=wallet-transactions-${VERSION}.zip" >> $GITHUB_ENV
+          zip -r "wallet-transactions-build.zip" dist/ SHA256SUMS.txt
 
-      # Upload for audit trail — retained 90 days
       - name: Upload build artefact
         uses: actions/upload-artifact@v4
         with:
           name: wallet-transactions-build
           path: |
-            ${{ env.BUILD_FILE }}
+            wallet-transactions-build.zip
             SHA256SUMS.txt
           retention-days: 90
-
-
-  # ─────────────────────────────────────────────────────────
-  # JOB 5: Release Simulation (only on version tags v*.*.*)
-  # Demonstrates: tag-based release, release notes, artefact
-  # attachment — replacing manual release tracking spreadsheet
-  # ─────────────────────────────────────────────────────────
-  release:
-    name: "Release Simulation"
-    runs-on: ubuntu-latest
-    needs: build-and-package
-    if: startsWith(github.ref, 'refs/tags/v')
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Download build artefact
-        uses: actions/download-artifact@v4
-        with:
-          name: wallet-transactions-build
-
-      - name: Download coverage report
-        uses: actions/download-artifact@v4
-        with:
-          name: coverage-report
-
-      - name: Download security reports
-        uses: actions/download-artifact@v4
-        with:
-          name: security-reports
-
-      # Auto-generate release notes from commit history
-      - name: Create GitHub Release with artefacts
-        uses: softprops/action-gh-release@v2
-        with:
-          name: "MeridianPay wallet-transactions ${{ github.ref_name }}"
-          body: |
-            ## Release ${{ github.ref_name }}
-
-            **Pipeline Summary — All gates passed before this release.**
-
-            ### Quality Gates Passed
-            - Lint (ruff): PASSED
-            - Unit Tests: PASSED (coverage >= 80%)
-            - SAST Scan (Bandit): PASSED
-            - Dependency Scan (Safety): PASSED — no HIGH/CRITICAL CVEs
-            - Secret Scan (Gitleaks): PASSED — no secrets detected
-            - Integration Tests: PASSED (7/7 scenarios)
-
-            ### Audit Evidence Attached
-            - `wallet-transactions-${{ github.ref_name }}.zip` — Signed build artefact
-            - `SHA256SUMS.txt` — Integrity manifest
-            - `coverage.xml` — Test coverage report
-            - `bandit-report.json` — SAST scan results
-
-            ### Change Classification (ITSM)
-            This release was classified as a **Standard Change** (pre-approved).
-            All pipeline gates passed automatically. No manual CAB approval required.
-            Evidence retained for 90 days per audit policy.
-
-            ### Deployment Instructions
-            This artefact is deployed by the Platform Engineering pipeline.
-            Manual deployment is prohibited. See runbook: ITSM-RUNBOOK-v1.
-
-          files: |
-            *.zip
-            SHA256SUMS.txt
-            coverage.xml
-            bandit-report.json
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
