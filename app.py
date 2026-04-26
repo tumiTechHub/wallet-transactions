@@ -3,9 +3,10 @@ MeridianPay — wallet-transactions API
 A minimal REST API demonstrating CI/CD pipeline practices.
 """
 
-from flask import Flask, jsonify, request
-from datetime import datetime
 import uuid
+from datetime import datetime
+
+from flask import Flask, jsonify, request
 
 app = Flask(__name__)
 
