@@ -4,7 +4,7 @@ Run with: pytest tests/ -v --cov=app --cov-report=term-missing
 """
 
 import pytest
-from app import app, WALLETS, TRANSACTIONS
+from app import TRANSACTIONS, WALLETS, app
 
 
 @pytest.fixture(autouse=True)
